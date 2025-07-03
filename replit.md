@@ -103,7 +103,20 @@ This is a full-stack AI document analysis application built with FastAPI backend
 - Error recovery and logging
 
 ## Changelog
-- July 03, 2025. Initial setup
+- July 03, 2025. Initial setup complete with full application stack
+- July 03, 2025. Added comprehensive local setup documentation and scripts
+- July 03, 2025. Fixed Pydantic compatibility warnings
+- July 03, 2025. Created installation scripts for Windows, macOS, and Linux
+
+## Recent Changes
+- ✅ Complete application built with Streamlit frontend and FastAPI backend
+- ✅ Azure OpenAI integration for embeddings and chat responses
+- ✅ FAISS vector store for document similarity search
+- ✅ Support for PDF, TXT, and DOCX document formats
+- ✅ Comprehensive local setup documentation created
+- ✅ Installation scripts for multiple operating systems
+- ✅ Environment configuration templates
+- ✅ Troubleshooting guides and debugging instructions
 
 ## User Preferences
 

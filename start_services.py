@@ -4,7 +4,8 @@ import os
 import time
 import threading
 from pathlib import Path
-
+from dotenv import load_dotenv
+load_dotenv()
 def run_backend():
     """Run the FastAPI backend"""
     print("🚀 Starting FastAPI backend on port 8000...")

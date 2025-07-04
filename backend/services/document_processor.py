@@ -5,7 +5,7 @@ import PyPDF2
 import docx
 import tiktoken
 from io import BytesIO
-
+import logging
 class DocumentProcessor:
     """Service for processing and chunking documents"""
     
@@ -13,9 +13,11 @@ class DocumentProcessor:
         self.encoding = tiktoken.get_encoding("cl100k_base")
         self.chunk_size = 1000  # tokens
         self.chunk_overlap = 200  # tokens
-    
+        self.logger = logging.getLogger(__name__)
+        self.logger.info("Initializing DocumentProcessor")
     def process_document(self, file_path: str, filename: str) -> str:
         """Process a document and extract text content"""
+        self.logger.info(f"Processing document: {filename}")
         try:
             file_extension = os.path.splitext(filename)[1].lower()
             
@@ -33,6 +35,7 @@ class DocumentProcessor:
     
     def _process_pdf(self, file_path: str) -> str:
         """Extract text from PDF file"""
+        self.logger.info(f"Processing PDF: {file_path}")
         try:
             text = ""
             with open(file_path, 'rb') as file:
@@ -49,6 +52,7 @@ class DocumentProcessor:
     
     def _process_txt(self, file_path: str) -> str:
         """Extract text from TXT file"""
+        self.logger.info(f"Processing TXT: {file_path}")
         try:
             with open(file_path, 'r', encoding='utf-8') as file:
                 text = file.read()
@@ -68,6 +72,7 @@ class DocumentProcessor:
     
     def _process_docx(self, file_path: str) -> str:
         """Extract text from DOCX file"""
+        self.logger.info(f"Processing DOCX: {file_path}")
         try:
             doc = docx.Document(file_path)
             text = ""
@@ -82,6 +87,7 @@ class DocumentProcessor:
     
     def _clean_text(self, text: str) -> str:
         """Clean and normalize text"""
+        self.logger.info(f"Cleaning text")
         # Remove extra whitespace
         text = re.sub(r'\s+', ' ', text)
         
@@ -95,6 +101,7 @@ class DocumentProcessor:
     
     def create_chunks(self, text: str) -> List[str]:
         """Split text into chunks with overlap"""
+        self.logger.info(f"Creating chunks from text")
         try:
             if not text or not text.strip():
                 return []
@@ -133,6 +140,7 @@ class DocumentProcessor:
     
     def count_tokens(self, text: str) -> int:
         """Count tokens in text"""
+        self.logger.info(f"Counting tokens in text")
         try:
             return len(self.encoding.encode(text))
         except Exception:
@@ -140,4 +148,5 @@ class DocumentProcessor:
     
     def is_ready(self) -> bool:
         """Check if document processor is ready"""
+        self.logger.info(f"Checking if document processor is ready")
         return True

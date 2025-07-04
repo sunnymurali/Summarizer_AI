@@ -4,6 +4,10 @@ from typing import List, Optional
 import asyncio
 import json
 from openai import AzureOpenAI
+from dotenv import load_dotenv
+load_dotenv()
+import logging
+
 
 class AzureOpenAIService:
     """Service for interacting with Azure OpenAI API"""
@@ -12,9 +16,9 @@ class AzureOpenAIService:
         # Initialize Azure OpenAI client
         self.api_key = os.getenv("AZURE_OPENAI_API_KEY")
         self.endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        self.api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
-        self.deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4")
-        self.embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002")
+        self.api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+        self.deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
+        self.embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
         
         if not self.api_key or not self.endpoint:
             raise ValueError("Azure OpenAI API key and endpoint must be provided via environment variables")
@@ -24,9 +28,12 @@ class AzureOpenAIService:
             api_version=self.api_version,
             azure_endpoint=self.endpoint
         )
+        self.logger = logging.getLogger(__name__)
+        self.logger.info("Initializing AzureOpenAIService")
     
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for a list of texts"""
+        self.logger.info("Getting embeddings for %d texts", len(texts))
         try:
             if not texts:
                 return []
@@ -54,6 +61,7 @@ class AzureOpenAIService:
     
     async def generate_response(self, query: str, context_chunks: List[str], document_filename: str) -> str:
         """Generate a response based on query and context chunks"""
+        self.logger.info("Generating response for query '%s' with %d context chunks", query, len(context_chunks))
         try:
             # Prepare context
             context = "\n\n".join(context_chunks)
@@ -95,6 +103,7 @@ class AzureOpenAIService:
     
     def is_configured(self) -> bool:
         """Check if Azure OpenAI service is properly configured"""
+        self.logger.info("Checking if Azure OpenAI service is configured")
         try:
             return bool(self.api_key and self.endpoint and self.client)
         except:
@@ -102,6 +111,7 @@ class AzureOpenAIService:
     
     def get_model_info(self) -> dict:
         """Get information about the configured models"""
+        self.logger.info("Getting information about the configured models")
         return {
             "chat_model": self.deployment_name,
             "embedding_model": self.embedding_deployment,
@@ -111,6 +121,7 @@ class AzureOpenAIService:
     
     async def test_connection(self) -> bool:
         """Test connection to Azure OpenAI service"""
+        self.logger.info("Testing connection to Azure OpenAI service")
         try:
             # Test embedding
             test_embedding = await self.get_embeddings(["test"])
@@ -127,5 +138,5 @@ class AzureOpenAIService:
             return bool(response.choices[0].message.content)
             
         except Exception as e:
-            print(f"Connection test failed: {str(e)}")
+            logger.error("Connection test failed: %s", str(e))
             return False

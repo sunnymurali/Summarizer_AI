@@ -169,6 +169,66 @@ async def query_document(request: QueryRequest):
             detail=f"Error processing query: {str(e)}"
         )
 
+@app.post("/query_reranked", response_model=QueryResponse)
+async def query_document_by_semantic_reranking(request: QueryRequest):
+    """Query the uploaded document with semantic reranking for better results"""
+    global current_document, document_status
+    
+    if document_status != "ready" or not current_document:
+        raise HTTPException(
+            status_code=400,
+            detail="No document is ready for querying. Please upload a document first."
+        )
+    
+    try:
+        # Step 1: Get query embedding
+        query_embedding = await azure_openai_service.get_embeddings([request.query])
+        
+        if not query_embedding:
+            raise HTTPException(
+                status_code=500,
+                detail="Could not generate embedding for query"
+            )
+        
+        # Step 2: Perform initial semantic search to get larger pool of candidates
+        k_initial = 10  # Get more candidates for reranking
+        retrieved_docs = vector_store.search_similar_with_metadata(query_embedding[0], k=k_initial)
+        
+        if not retrieved_docs:
+            return QueryResponse(
+                response="I couldn't find relevant information in the document to answer your question.",
+                query=request.query,
+                sources=[]
+            )
+        
+        # Step 3: Re-rank documents using GPT-4o
+        reranked_docs = await azure_openai_service.rerank_documents(
+            query=request.query,
+            retrieved_docs=retrieved_docs
+        )
+        
+        # Step 4: Extract top reranked chunks for response generation
+        top_reranked_chunks = [doc['text'] for doc in reranked_docs[:5]]
+        
+        # Step 5: Generate response using Azure OpenAI with reranked context
+        response_text = await azure_openai_service.generate_response(
+            query=request.query,
+            context_chunks=top_reranked_chunks,
+            document_filename=current_document["filename"]
+        )
+        
+        return QueryResponse(
+            response=response_text,
+            query=request.query,
+            sources=top_reranked_chunks[:3]  # Return top 3 reranked sources
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing query with reranking: {str(e)}"
+        )
+
 @app.post("/reset")
 async def reset_session():
     """Reset the current session"""

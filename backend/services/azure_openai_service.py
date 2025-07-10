@@ -101,6 +101,77 @@ class AzureOpenAIService:
         except Exception as e:
             raise Exception(f"Error generating response: {str(e)}")
     
+
+
+    async def rerank_documents(self, query: str, retrieved_docs: List[dict]) -> List[dict]:
+        """Re-rank retrieved documents using GPT-4o for better relevance"""
+        try:
+            if not retrieved_docs:
+                return []
+            
+            # Prepare documents for reranking
+            docs_text = ""
+            for i, doc in enumerate(retrieved_docs):
+                docs_text += f"Document {i+1}:\n{doc['text']}\n\n"
+            
+            # Create reranking prompt
+            system_message = """You are an expert document ranker. Given a user query and a list of document excerpts, 
+            rank them by relevance to the query. Consider semantic similarity, context relevance, and how well each 
+            document answers the query.
+
+            Return your response as a JSON array of document IDs in order of relevance (most relevant first).
+            Only return the JSON array, nothing else.
+            
+            Example format: [1, 3, 2, 4, 5]
+            """
+            
+            user_message = f"""Query: {query}
+
+            Documents to rank:
+            {docs_text}
+
+            Rank these documents by relevance to the query. Return only a JSON array of document numbers (1-{len(retrieved_docs)}) in order of relevance."""
+            
+            # Generate reranking
+            response = self.client.chat.completions.create(
+                model=self.deployment_name,
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": user_message}
+                ],
+                max_tokens=200,
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            
+            # Parse the ranking
+            try:
+                ranking_result = json.loads(response.choices[0].message.content.strip())
+                if isinstance(ranking_result, list):
+                    ranking = ranking_result
+                else:
+                    # Handle case where response is wrapped in an object
+                    ranking = ranking_result.get('ranking', list(range(1, len(retrieved_docs) + 1)))
+            except json.JSONDecodeError:
+                # Fallback to original order if JSON parsing fails
+                ranking = list(range(1, len(retrieved_docs) + 1))
+            
+            # Reorder documents based on ranking
+            reranked_docs = []
+            for rank_idx in ranking:
+                if 1 <= rank_idx <= len(retrieved_docs):
+                    doc_idx = rank_idx - 1  # Convert to 0-based index
+                    reranked_doc = retrieved_docs[doc_idx].copy()
+                    reranked_doc['rerank_score'] = len(ranking) - ranking.index(rank_idx)
+                    reranked_docs.append(reranked_doc)
+            
+            return reranked_docs
+            
+        except Exception as e:
+            # If reranking fails, return original order
+            print(f"Warning: Reranking failed: {str(e)}")
+            return retrieved_docs
+
     def is_configured(self) -> bool:
         """Check if Azure OpenAI service is properly configured"""
         self.logger.info("Checking if Azure OpenAI service is configured")

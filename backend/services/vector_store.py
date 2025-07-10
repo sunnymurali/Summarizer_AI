@@ -140,7 +140,48 @@ class VectorStore:
             
         except Exception as e:
             raise Exception(f"Error getting similarity scores: {str(e)}")
-    
+    def search_similar_with_metadata(self, query_embedding: List[float], k: int = 10) -> List[dict]:
+        """Search for similar documents and return with metadata for reranking"""
+        try:
+            if not self.is_initialized or self.index is None:
+                return []
+            
+            if len(self.documents) == 0:
+                return []
+            
+            # Convert query embedding to numpy array
+            query_array = np.array([query_embedding], dtype=np.float32)
+            
+            # Validate query embedding dimension
+            if query_array.shape[1] != self.dimension:
+                raise ValueError(f"Query embedding dimension mismatch. Expected {self.dimension}, got {query_array.shape[1]}")
+            
+            # Search for similar vectors
+            k = min(k, len(self.documents))
+            if self.index is not None:
+                distances, indices = self.index.search(query_array, k)
+            else:
+                return []
+            
+            # Return documents with metadata
+            results = []
+            for i, (dist, idx) in enumerate(zip(distances[0], indices[0])):
+                if 0 <= idx < len(self.documents):
+                    doc_data = {
+                        'id': str(idx),
+                        'text': self.documents[idx],
+                        'similarity_score': float(np.exp(-dist)),
+                        'distance': float(dist),
+                        'rank': i + 1
+                    }
+                    results.append(doc_data)
+            
+            return results
+            
+        except Exception as e:
+            raise Exception(f"Error searching similar documents with metadata: {str(e)}")
+
+            
     def clear(self):
         """Clear all documents and embeddings from the vector store"""
         try:

@@ -56,7 +56,7 @@ def send_query(query: str):
     """Send query to backend for document analysis"""
     try:
         data = {"query": query}
-        response = requests.post(f"{BACKEND_URL}/query", json=data, timeout=30)
+        response = requests.post(f"{BACKEND_URL}/query_reranked", json=data, timeout=30)
         
         if response.status_code == 200:
             result = response.json()

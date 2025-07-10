@@ -86,6 +86,57 @@ def send_query_reranked(query: str):
     except Exception as e:
         return False, f"Error: {str(e)}"
 
+def send_query_bm25(query: str):
+    """Send query to backend for BM25 keyword search"""
+    try:
+        data = {"query": query}
+        response = requests.post(f"{BACKEND_URL}/query_bm25", json=data, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            return True, result
+        else:
+            error_detail = response.json().get("detail", "Unknown error")
+            return False, f"BM25 query failed: {error_detail}"
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection error: {str(e)}"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+def send_query_contextual(query: str):
+    """Send query to backend for contextual retrieval"""
+    try:
+        data = {"query": query}
+        response = requests.post(f"{BACKEND_URL}/query_contextual", json=data, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            return True, result
+        else:
+            error_detail = response.json().get("detail", "Unknown error")
+            return False, f"Contextual query failed: {error_detail}"
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection error: {str(e)}"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+def send_query_hybrid(query: str):
+    """Send query to backend for hybrid retrieval"""
+    try:
+        data = {"query": query}
+        response = requests.post(f"{BACKEND_URL}/query_hybrid", json=data, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            return True, result
+        else:
+            error_detail = response.json().get("detail", "Unknown error")
+            return False, f"Hybrid query failed: {error_detail}"
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection error: {str(e)}"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
 def display_sources(sources: List[str], title: str = "📚 Sources Used"):
     """Display source citations in an expandable section"""
     if sources:
@@ -183,12 +234,29 @@ with st.sidebar:
         
         # Query method selection
         st.header("🔍 Query Method")
-        query_method = st.radio(
-            "Choose query method:",
-            ["Standard Query", "Reranked Query (Better Results)"],
-            index=1,
-            help="Reranked query uses GPT-4o to reorder results for better accuracy"
+        query_method = st.selectbox(
+            "Choose retrieval strategy:",
+            [
+                "Standard Query",
+                "Reranked Query (GPT-4o)",
+                "BM25 Keyword Search", 
+                "Contextual Retrieval",
+                "Hybrid Search (Recommended)"
+            ],
+            index=4,  # Default to Hybrid Search
+            help="Different methods for finding relevant information in your document"
         )
+        
+        # Query method descriptions
+        method_descriptions = {
+            "Standard Query": "🔍 Basic semantic similarity search",
+            "Reranked Query (GPT-4o)": "🔄 Semantic search + GPT-4o reranking",
+            "BM25 Keyword Search": "🔤 Keyword-based search for exact terms",
+            "Contextual Retrieval": "📖 Context-aware document search",
+            "Hybrid Search (Recommended)": "🚀 Combines all methods for best results"
+        }
+        
+        st.info(method_descriptions.get(query_method, "Select a query method"))
 
 # Main content area
 if not st.session_state.document_uploaded:
@@ -243,13 +311,25 @@ else:
         # Get AI response
         with st.chat_message("assistant"):
             with st.spinner("Analyzing document..."):
-                # Check which query method is selected
-                if query_method == "Reranked Query (Better Results)":
+                # Route to appropriate query method
+                if query_method == "Standard Query":
+                    success, response_data = send_query(prompt)
+                    query_type = "🔍 Standard Query"
+                elif query_method == "Reranked Query (GPT-4o)":
                     success, response_data = send_query_reranked(prompt)
                     query_type = "🔄 Reranked Query"
+                elif query_method == "BM25 Keyword Search":
+                    success, response_data = send_query_bm25(prompt)
+                    query_type = "🔤 BM25 Search"
+                elif query_method == "Contextual Retrieval":
+                    success, response_data = send_query_contextual(prompt)
+                    query_type = "📖 Contextual Search"
+                elif query_method == "Hybrid Search (Recommended)":
+                    success, response_data = send_query_hybrid(prompt)
+                    query_type = "🚀 Hybrid Search"
                 else:
                     success, response_data = send_query(prompt)
-                    query_type = "📝 Standard Query"
+                    query_type = "🔍 Default Query"
                 
                 if success and isinstance(response_data, dict):
                     # Display the response

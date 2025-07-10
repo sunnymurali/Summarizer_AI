@@ -6,7 +6,8 @@ import os
 import shutil
 import tempfile
 from typing import Optional
-
+from .services.bm25_retriever import BM25Retriever
+from .services.contextual_retriever import ContextualRetriever
 from .services.document_processor import DocumentProcessor
 from .services.vector_store import VectorStore
 from .services.azure_openai_service import AzureOpenAIService
@@ -29,7 +30,8 @@ app.add_middleware(
 document_processor = DocumentProcessor()
 vector_store = VectorStore()
 azure_openai_service = AzureOpenAIService()
-
+bm25_retriever = BM25Retriever()
+contextual_retriever = ContextualRetriever()
 # Global state
 current_document = None
 document_status = "none"  # none, processing, ready, error
@@ -78,7 +80,12 @@ async def upload_document(file: UploadFile = File(...)):
             # Generate embeddings and store in vector store
             embeddings = await azure_openai_service.get_embeddings(chunks)
             vector_store.add_documents(chunks, embeddings)
+                        
+            # Add documents to BM25 retriever
+            bm25_retriever.add_documents(chunks)
             
+            # Add documents to contextual retriever
+            contextual_retriever.add_documents(chunks, embeddings)
             # Update global state
             current_document = {
                 "filename": file.filename,
@@ -229,6 +236,215 @@ async def query_document_by_semantic_reranking(request: QueryRequest):
             detail=f"Error processing query with reranking: {str(e)}"
         )
 
+@app.post("/query_bm25", response_model=QueryResponse)
+async def query_document_bm25(request: QueryRequest):
+    """Query document using BM25 keyword search"""
+    global current_document, document_status
+    
+    if document_status != "ready" or not current_document:
+        raise HTTPException(
+            status_code=400,
+            detail="No document is ready for querying. Please upload a document first."
+        )
+    
+    try:
+        # Search using BM25
+        bm25_results = bm25_retriever.search(request.query, k=5)
+        
+        if not bm25_results:
+            return QueryResponse(
+                response="I couldn't find relevant information using keyword search. Try a different query approach.",
+                query=request.query,
+                sources=[]
+            )
+        
+        # Extract text chunks from BM25 results
+        top_chunks = [result['text'] for result in bm25_results]
+        
+        # Generate response using Azure OpenAI
+        response_text = await azure_openai_service.generate_response(
+            query=request.query,
+            context_chunks=top_chunks,
+            document_filename=current_document["filename"]
+        )
+        
+        return QueryResponse(
+            response=response_text,
+            query=request.query,
+            sources=top_chunks[:3]  # Return top 3 BM25 sources
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing BM25 query: {str(e)}"
+        )
+@app.post("/query_contextual", response_model=QueryResponse)
+async def query_document_contextual(request: QueryRequest):
+    """Query document using contextual retrieval"""
+    global current_document, document_status
+    
+    if document_status != "ready" or not current_document:
+        raise HTTPException(
+            status_code=400,
+            detail="No document is ready for querying. Please upload a document first."
+        )
+    
+    try:
+        # Get query embedding
+        query_embedding = await azure_openai_service.get_embeddings([request.query])
+        
+        if not query_embedding:
+            raise HTTPException(
+                status_code=500,
+                detail="Could not generate embedding for query"
+            )
+        
+        # Search using contextual retrieval
+        contextual_results = contextual_retriever.search_contextual(
+            query=request.query,
+            query_embedding=query_embedding[0],
+            k=5
+        )
+        
+        if not contextual_results:
+            return QueryResponse(
+                response="I couldn't find relevant information using contextual search.",
+                query=request.query,
+                sources=[]
+            )
+        
+        # Extract text chunks from contextual results
+        top_chunks = [result['text'] for result in contextual_results]
+        
+        # Generate response using Azure OpenAI
+        response_text = await azure_openai_service.generate_response(
+            query=request.query,
+            context_chunks=top_chunks,
+            document_filename=current_document["filename"]
+        )
+        
+        return QueryResponse(
+            response=response_text,
+            query=request.query,
+            sources=top_chunks[:3]  # Return top 3 contextual sources
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing contextual query: {str(e)}"
+        )
+@app.post("/query_hybrid", response_model=QueryResponse)
+async def query_document_hybrid(request: QueryRequest):
+    """Query document using hybrid retrieval (combines multiple methods)"""
+    global current_document, document_status
+    
+    if document_status != "ready" or not current_document:
+        raise HTTPException(
+            status_code=400,
+            detail="No document is ready for querying. Please upload a document first."
+        )
+    
+    try:
+        # Get query embedding
+        query_embedding = await azure_openai_service.get_embeddings([request.query])
+        
+        if not query_embedding:
+            raise HTTPException(
+                status_code=500,
+                detail="Could not generate embedding for query"
+            )
+        
+        # 1. Semantic search (vector store)
+        semantic_results = vector_store.search_similar_with_metadata(query_embedding[0], k=8)
+        
+        # 2. BM25 keyword search
+        bm25_results = bm25_retriever.search(request.query, k=8)
+        
+        # 3. Contextual search
+        contextual_results = contextual_retriever.search_contextual(
+            query=request.query,
+            query_embedding=query_embedding[0],
+            k=8
+        )
+        
+        # Combine and score results
+        all_results = []
+        
+        # Add semantic results with weight
+        for i, result in enumerate(semantic_results):
+            all_results.append({
+                'text': result['text'],
+                'score': result['similarity_score'] * 0.4,  # 40% weight
+                'method': 'semantic',
+                'rank': i + 1
+            })
+        
+        # Add BM25 results with weight
+        for i, result in enumerate(bm25_results):
+            all_results.append({
+                'text': result['text'],
+                'score': result['bm25_score'] * 0.3,  # 30% weight
+                'method': 'bm25',
+                'rank': i + 1
+            })
+        
+        # Add contextual results with weight
+        for i, result in enumerate(contextual_results):
+            all_results.append({
+                'text': result['text'],
+                'score': result['final_score'] * 0.3,  # 30% weight
+                'method': 'contextual',
+                'rank': i + 1
+            })
+        
+        # Remove duplicates and sort by combined score
+        unique_results = {}
+        for result in all_results:
+            text = result['text']
+            if text in unique_results:
+                # Combine scores from multiple methods
+                unique_results[text]['score'] += result['score']
+                unique_results[text]['methods'].append(result['method'])
+            else:
+                unique_results[text] = {
+                    'text': text,
+                    'score': result['score'],
+                    'methods': [result['method']]
+                }
+        
+        # Sort by combined score and take top results
+        sorted_results = sorted(unique_results.values(), key=lambda x: x['score'], reverse=True)
+        top_chunks = [result['text'] for result in sorted_results[:5]]
+        
+        if not top_chunks:
+            return QueryResponse(
+                response="I couldn't find relevant information using hybrid search.",
+                query=request.query,
+                sources=[]
+            )
+        
+        # Generate response using Azure OpenAI
+        response_text = await azure_openai_service.generate_response(
+            query=request.query,
+            context_chunks=top_chunks,
+            document_filename=current_document["filename"]
+        )
+        
+        return QueryResponse(
+            response=response_text,
+            query=request.query,
+            sources=top_chunks[:3]  # Return top 3 hybrid sources
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing hybrid query: {str(e)}"
+        )
+
+
 @app.post("/reset")
 async def reset_session():
     """Reset the current session"""
@@ -237,7 +453,8 @@ async def reset_session():
     try:
         # Clear vector store
         vector_store.clear()
-        
+        bm25_retriever.clear()
+        contextual_retriever.clear()
         # Reset global state
         current_document = None
         document_status = "none"
@@ -257,7 +474,9 @@ async def health_check():
         "status": "healthy",
         "azure_openai": azure_openai_service.is_configured(),
         "vector_store": vector_store.is_ready(),
-        "document_processor": document_processor.is_ready()
+        "document_processor": document_processor.is_ready(),
+        "bm25_retriever": bm25_retriever.is_ready(),
+        "contextual_retriever": contextual_retriever.is_ready()
     }
 
 @app.get("/")

@@ -85,20 +85,25 @@ class AzureOpenAIService:
             user_message = f"Question: {query}"
             
             # Generate response
+            self.logger.info("Generating response using Azure OpenAI")
             response = self.client.chat.completions.create(
                 model=self.deployment_name,
                 messages=[
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": user_message}
                 ],
-                max_tokens=1000,
+                max_tokens=2500,
                 temperature=0.3,
                 top_p=0.95
             )
             
+            self.logger.info("Received response from Azure OpenAI")
+            self.logger.debug("Response: %s", response)
+            
             return response.choices[0].message.content.strip()
             
         except Exception as e:
+            self.logger.error("Error generating response: %s", str(e))
             raise Exception(f"Error generating response: {str(e)}")
     
 
@@ -107,6 +112,7 @@ class AzureOpenAIService:
         """Re-rank retrieved documents using GPT-4o for better relevance"""
         try:
             if not retrieved_docs:
+                self.logger.info("No documents to rerank")
                 return []
             
             # Prepare documents for reranking
@@ -115,6 +121,7 @@ class AzureOpenAIService:
                 docs_text += f"Document {i+1}:\n{doc['text']}\n\n"
             
             # Create reranking prompt
+            self.logger.info("Creating reranking prompt")
             system_message = """You are an expert document ranker. Given a user query and a list of document excerpts, 
             rank them by relevance to the query. Consider semantic similarity, context relevance, and how well each 
             document answers the query.
@@ -133,6 +140,7 @@ class AzureOpenAIService:
             Rank these documents by relevance to the query. Return only a JSON array of document numbers (1-{len(retrieved_docs)}) in order of relevance."""
             
             # Generate reranking
+            self.logger.info("Generating reranking")
             response = self.client.chat.completions.create(
                 model=self.deployment_name,
                 messages=[
@@ -140,13 +148,16 @@ class AzureOpenAIService:
                     {"role": "user", "content": user_message}
                 ],
                 max_tokens=200,
-                temperature=0.1,
-                response_format={"type": "json_object"}
+                temperature=0.1
             )
             
             # Parse the ranking
+            self.logger.info("Parsing reranking")
             try:
-                ranking_result = json.loads(response.choices[0].message.content.strip())
+                raw_output = response.choices[0].message.content.strip()
+                self.logger.info(f"LLM returned reranking: {raw_output}")
+                ranking_result = json.loads(raw_output)
+                self.logger.info(f"Parsed reranking: {ranking_result}")
                 if isinstance(ranking_result, list):
                     ranking = ranking_result
                 else:
@@ -154,9 +165,11 @@ class AzureOpenAIService:
                     ranking = ranking_result.get('ranking', list(range(1, len(retrieved_docs) + 1)))
             except json.JSONDecodeError:
                 # Fallback to original order if JSON parsing fails
+                self.logger.warning("JSON parsing failed, falling back to original order")
                 ranking = list(range(1, len(retrieved_docs) + 1))
             
             # Reorder documents based on ranking
+            self.logger.info("Reordering documents based on reranking")
             reranked_docs = []
             for rank_idx in ranking:
                 if 1 <= rank_idx <= len(retrieved_docs):
@@ -164,12 +177,12 @@ class AzureOpenAIService:
                     reranked_doc = retrieved_docs[doc_idx].copy()
                     reranked_doc['rerank_score'] = len(ranking) - ranking.index(rank_idx)
                     reranked_docs.append(reranked_doc)
-            
+            self.logger.info(f"Reordered documents based on reranking: {reranked_docs}")
             return reranked_docs
             
         except Exception as e:
             # If reranking fails, return original order
-            print(f"Warning: Reranking failed: {str(e)}")
+            self.logger.warning(f"Reranking failed: {str(e)}")
             return retrieved_docs
 
     def is_configured(self) -> bool:

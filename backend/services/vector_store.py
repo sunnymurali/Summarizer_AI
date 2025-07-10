@@ -143,14 +143,18 @@ class VectorStore:
     def search_similar_with_metadata(self, query_embedding: List[float], k: int = 10) -> List[dict]:
         """Search for similar documents and return with metadata for reranking"""
         try:
+            self.logger.info("Searching for similar documents with metadata")
             if not self.is_initialized or self.index is None:
+                self.logger.info("Vector store not initialized - cannot search for similar documents with metadata")
                 return []
             
             if len(self.documents) == 0:
+                self.logger.info("No documents to search for similar documents with metadata")
                 return []
             
             # Convert query embedding to numpy array
             query_array = np.array([query_embedding], dtype=np.float32)
+            self.logger.debug(f"Query embedding array shape: {query_array.shape}")
             
             # Validate query embedding dimension
             if query_array.shape[1] != self.dimension:
@@ -158,9 +162,12 @@ class VectorStore:
             
             # Search for similar vectors
             k = min(k, len(self.documents))
+            self.logger.info(f"Searching for {k} similar documents")
             if self.index is not None:
                 distances, indices = self.index.search(query_array, k)
+                self.logger.info("Searched for similar documents")
             else:
+                self.logger.info("FAISS index not initialized - cannot search for similar documents")
                 return []
             
             # Return documents with metadata
@@ -175,13 +182,16 @@ class VectorStore:
                         'rank': i + 1
                     }
                     results.append(doc_data)
+                    self.logger.debug(f"Document {idx} with similarity score {np.exp(-dist):.4f} and distance {dist:.4f}")
             
+            self.logger.info(f"Found {len(results)} similar documents with metadata")
             return results
             
         except Exception as e:
+            self.logger.error(f"Error searching similar documents with metadata: {str(e)}")
             raise Exception(f"Error searching similar documents with metadata: {str(e)}")
 
-            
+
     def clear(self):
         """Clear all documents and embeddings from the vector store"""
         try:

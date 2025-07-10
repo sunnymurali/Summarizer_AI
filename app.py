@@ -56,11 +56,11 @@ def send_query(query: str):
     """Send query to backend for document analysis"""
     try:
         data = {"query": query}
-        response = requests.post(f"{BACKEND_URL}/query_reranked", json=data, timeout=30)
+        response = requests.post(f"{BACKEND_URL}/query", json=data, timeout=30)
         
         if response.status_code == 200:
             result = response.json()
-            return True, result.get("response", "No response received")
+            return True, result  # Return full result with sources
         else:
             error_detail = response.json().get("detail", "Unknown error")
             return False, f"Query failed: {error_detail}"
@@ -68,6 +68,40 @@ def send_query(query: str):
         return False, f"Connection error: {str(e)}"
     except Exception as e:
         return False, f"Error: {str(e)}"
+
+def send_query_reranked(query: str):
+    """Send query to backend for reranked document analysis"""
+    try:
+        data = {"query": query}
+        response = requests.post(f"{BACKEND_URL}/query_reranked", json=data, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            return True, result  # Return full result with sources
+        else:
+            error_detail = response.json().get("detail", "Unknown error")
+            return False, f"Query failed: {error_detail}"
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection error: {str(e)}"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+def display_sources(sources: List[str], title: str = "📚 Sources Used"):
+    """Display source citations in an expandable section"""
+    if sources:
+        with st.expander(f"{title} ({len(sources)} sources)", expanded=False):
+            for i, source in enumerate(sources, 1):
+                st.markdown(f"**Source {i}:**")
+                # Truncate long sources for better display
+                if len(source) > 500:
+                    preview = source[:500] + "..."
+                    st.markdown(f"*{preview}*")
+                    with st.expander(f"View full source {i}"):
+                        st.text(source)
+                else:
+                    st.markdown(f"*{source}*")
+                if i < len(sources):
+                    st.markdown("---")
 
 def clear_chat():
     """Clear chat history"""
@@ -146,6 +180,15 @@ with st.sidebar:
         with col2:
             if st.button("Reset All"):
                 reset_session()
+        
+        # Query method selection
+        st.header("🔍 Query Method")
+        query_method = st.radio(
+            "Choose query method:",
+            ["Standard Query", "Reranked Query (Better Results)"],
+            index=1,
+            help="Reranked query uses GPT-4o to reorder results for better accuracy"
+        )
 
 # Main content area
 if not st.session_state.document_uploaded:
@@ -184,6 +227,9 @@ else:
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            # Display sources if available
+            if message["role"] == "assistant" and "sources" in message:
+                display_sources(message["sources"])
     
     # Chat input
     if prompt := st.chat_input("Ask a question about your document..."):
@@ -197,14 +243,33 @@ else:
         # Get AI response
         with st.chat_message("assistant"):
             with st.spinner("Analyzing document..."):
-                success, response = send_query(prompt)
-                
-                if success:
-                    st.markdown(response)
-                    # Add assistant response to chat history
-                    st.session_state.messages.append({"role": "assistant", "content": response})
+                # Check which query method is selected
+                if query_method == "Reranked Query (Better Results)":
+                    success, response_data = send_query_reranked(prompt)
+                    query_type = "🔄 Reranked Query"
                 else:
-                    error_message = f"❌ {response}"
+                    success, response_data = send_query(prompt)
+                    query_type = "📝 Standard Query"
+                
+                if success and isinstance(response_data, dict):
+                    # Display the response
+                    response_text = response_data.get("response", "No response received")
+                    st.markdown(response_text)
+                    
+                    # Display sources if available
+                    sources = response_data.get("sources", [])
+                    if sources:
+                        display_sources(sources, f"📚 Sources Used ({query_type})")
+                    
+                    # Add assistant response to chat history with sources
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": response_text,
+                        "sources": sources,
+                        "query_type": query_type
+                    })
+                else:
+                    error_message = f"❌ {response_data if isinstance(response_data, str) else 'Unknown error'}"
                     st.error(error_message)
                     st.session_state.messages.append({"role": "assistant", "content": error_message})
 

@@ -52,6 +52,32 @@ def check_processing_status():
     except:
         return {"status": "error", "message": "Backend not available"}
 
+def list_documents():
+    """Get list of all uploaded documents"""
+    try:
+        response = requests.get(f"{BACKEND_URL}/documents", timeout=10)
+        if response.status_code == 200:
+            return True, response.json()
+        else:
+            return False, response.json().get("detail", "Unknown error")
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection error: {str(e)}"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+def delete_document(filename: str):
+    """Delete a specific document"""
+    try:
+        response = requests.delete(f"{BACKEND_URL}/documents/{filename}", timeout=10)
+        if response.status_code == 200:
+            return True, response.json()
+        else:
+            return False, response.json().get("detail", "Unknown error")
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection error: {str(e)}"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
 def send_query(query: str):
     """Send query to backend for document analysis"""
     try:
@@ -201,38 +227,60 @@ with st.sidebar:
                 else:
                     st.error(message)
     
-    # Document status
-    if st.session_state.document_uploaded:
-        st.header("📋 Document Status")
+    # Document management section
+    st.header("📋 Document Collection")
+    
+    # Check processing status
+    status_info = check_processing_status()
+    
+    if status_info["status"] == "ready":
+        st.success("✅ Documents ready for analysis")
+        st.session_state.processing_status = "ready"
+    elif status_info["status"] == "processing":
+        st.info("⏳ Processing document...")
+        st.session_state.processing_status = "processing"
+        # Auto-refresh every 2 seconds while processing
+        time.sleep(2)
+        st.rerun()
+    elif status_info["status"] == "none":
+        st.info("📄 No documents uploaded yet")
+        st.session_state.processing_status = "none"
+    else:
+        st.error(f"❌ {status_info.get('message', 'Unknown status')}")
+    
+    # Display documents list
+    success, docs_info = list_documents()
+    if success and docs_info.get("documents"):
+        st.markdown(f"**Total Documents:** {docs_info['total_documents']}")
+        st.markdown(f"**Total Chunks:** {docs_info['total_chunks']}")
         
-        # Check processing status
-        status_info = check_processing_status()
-        
-        if status_info["status"] == "ready":
-            st.success("✅ Document ready for analysis")
-            st.session_state.processing_status = "ready"
-        elif status_info["status"] == "processing":
-            st.info("⏳ Processing document...")
-            st.session_state.processing_status = "processing"
-            # Auto-refresh every 2 seconds while processing
-            time.sleep(2)
-            st.rerun()
-        else:
-            st.error(f"❌ {status_info.get('message', 'Unknown status')}")
-        
-        # Document info
-        st.info(f"📄 **Document:** {st.session_state.document_name}")
-        
-        # Control buttons
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Clear Chat"):
-                clear_chat()
-        with col2:
-            if st.button("Reset All"):
-                reset_session()
-        
-        # Query method selection
+        # Documents list with delete buttons
+        st.markdown("**Uploaded Documents:**")
+        for doc in docs_info["documents"]:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f"📄 **{doc['filename']}** ({doc['chunks']} chunks)")
+            with col2:
+                if st.button("🗑️", key=f"delete_{doc['filename']}", help=f"Delete {doc['filename']}"):
+                    with st.spinner(f"Deleting {doc['filename']}..."):
+                        del_success, del_message = delete_document(doc['filename'])
+                        if del_success:
+                            st.success(f"Deleted {doc['filename']}")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to delete: {del_message}")
+    
+    # Control buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Clear Chat"):
+            clear_chat()
+    with col2:
+        if st.button("Reset All"):
+            reset_session()
+    
+    # Query method selection (only show if documents are ready)
+    if status_info["status"] == "ready":
         st.header("🔍 Query Method")
         query_method = st.selectbox(
             "Choose retrieval strategy:",
@@ -244,7 +292,7 @@ with st.sidebar:
                 "Hybrid Search (Recommended)"
             ],
             index=4,  # Default to Hybrid Search
-            help="Different methods for finding relevant information in your document"
+            help="Different methods for finding relevant information in your documents"
         )
         
         # Query method descriptions
@@ -257,39 +305,48 @@ with st.sidebar:
         }
         
         st.info(method_descriptions.get(query_method, "Select a query method"))
+    else:
+        query_method = "Hybrid Search (Recommended)"  # Default when not ready
 
 # Main content area
-if not st.session_state.document_uploaded:
-    st.info("👆 Please upload a document using the sidebar to begin analysis")
+status_info = check_processing_status()
+
+if status_info["status"] == "none":
+    st.info("👆 Please upload documents using the sidebar to begin analysis")
     
     # Instructions
     st.markdown("### How to use:")
     st.markdown("""
-    1. **Upload a document** using the sidebar (PDF, TXT, or DOCX)
-    2. **Wait for processing** - the document will be analyzed and indexed
-    3. **Start chatting** - ask questions about your document content
-    4. **Get AI insights** - receive intelligent responses based on your document
+    1. **Upload documents** using the sidebar (PDF, TXT, or DOCX)
+    2. **Wait for processing** - documents will be analyzed and indexed
+    3. **Start chatting** - ask questions about your document collection
+    4. **Get AI insights** - receive intelligent responses based on all your documents
     """)
     
     st.markdown("### Example queries:")
     st.markdown("""
-    - "What is the main topic of this document?"
-    - "Summarize the key points"
-    - "What are the conclusions mentioned?"
-    - "Find information about [specific topic]"
+    - "What are the main topics across all documents?"
+    - "Compare the key points between documents"
+    - "Summarize findings from all uploaded files"
+    - "Find information about [specific topic] across documents"
     """)
 
-elif st.session_state.processing_status == "processing":
-    st.info("⏳ Your document is being processed. Please wait...")
+elif status_info["status"] == "processing":
+    st.info("⏳ Your documents are being processed. Please wait...")
     st.markdown("The system is:")
-    st.markdown("- Extracting text from your document")
-    st.markdown("- Breaking it into chunks for analysis")
+    st.markdown("- Extracting text from your documents")
+    st.markdown("- Breaking them into chunks for analysis")
     st.markdown("- Creating embeddings for similarity search")
     st.markdown("- Preparing the vector store for queries")
 
 else:
     # Chat interface
-    st.header("💬 Chat with your Document")
+    st.header("💬 Chat with your Documents")
+    
+    # Display document collection summary
+    success, docs_info = list_documents()
+    if success and docs_info.get("documents"):
+        st.info(f"📚 Ready to answer questions about {docs_info['total_documents']} document(s) with {docs_info['total_chunks']} text chunks")
     
     # Display chat messages
     for message in st.session_state.messages:
@@ -297,10 +354,17 @@ else:
             st.markdown(message["content"])
             # Display sources if available
             if message["role"] == "assistant" and "sources" in message:
-                display_sources(message["sources"])
+                query_type = message.get("query_type", "📝 Query")
+                display_sources(message["sources"], f"📚 Sources Used ({query_type})")
+                
+                # Display source documents if available
+                if "source_documents" in message and message["source_documents"]:
+                    st.markdown(f"**📄 Source Documents:** {', '.join(message['source_documents'])}")
+                if "documents_searched" in message:
+                    st.markdown(f"**🔍 Documents Searched:** {message['documents_searched']}")
     
     # Chat input
-    if prompt := st.chat_input("Ask a question about your document..."):
+    if prompt := st.chat_input("Ask a question about your documents..."):
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
         
@@ -341,11 +405,22 @@ else:
                     if sources:
                         display_sources(sources, f"📚 Sources Used ({query_type})")
                     
-                    # Add assistant response to chat history with sources
+                    # Display source documents and search info
+                    source_documents = response_data.get("source_documents", [])
+                    documents_searched = response_data.get("documents_searched", 0)
+                    
+                    if source_documents:
+                        st.markdown(f"**📄 Source Documents:** {', '.join(source_documents)}")
+                    if documents_searched:
+                        st.markdown(f"**🔍 Documents Searched:** {documents_searched}")
+                    
+                    # Add assistant response to chat history with all metadata
                     st.session_state.messages.append({
                         "role": "assistant", 
                         "content": response_text,
                         "sources": sources,
+                        "source_documents": source_documents,
+                        "documents_searched": documents_searched,
                         "query_type": query_type
                     })
                 else:

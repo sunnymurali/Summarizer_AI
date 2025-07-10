@@ -5,7 +5,7 @@ import uvicorn
 import os
 import shutil
 import tempfile
-from typing import Optional
+from typing import Optional, List
 from .services.bm25_retriever import BM25Retriever
 from .services.contextual_retriever import ContextualRetriever
 from .services.document_processor import DocumentProcessor
@@ -32,14 +32,15 @@ vector_store = VectorStore()
 azure_openai_service = AzureOpenAIService()
 bm25_retriever = BM25Retriever()
 contextual_retriever = ContextualRetriever()
-# Global state
-current_document = None
+# Global state for multiple documents
+documents_collection = []  # List of all uploaded documents
 document_status = "none"  # none, processing, ready, error
+total_chunks = 0
 
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
     """Upload and process a document"""
-    global current_document, document_status
+    global documents_collection, document_status, total_chunks
     
     try:
         # Validate file type
@@ -47,6 +48,14 @@ async def upload_document(file: UploadFile = File(...)):
             raise HTTPException(
                 status_code=400,
                 detail="Unsupported file type. Please upload PDF, TXT, or DOCX files."
+            )
+        
+        # Check if file already exists
+        existing_doc = next((doc for doc in documents_collection if doc["filename"] == file.filename), None)
+        if existing_doc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Document '{file.filename}' already exists. Please use a different name or remove the existing document first."
             )
         
         # Set processing status
@@ -77,6 +86,15 @@ async def upload_document(file: UploadFile = File(...)):
                     detail="Document is too short or could not be processed into chunks."
                 )
             
+            # Add document metadata to chunks for tracking
+            chunks_with_metadata = []
+            for chunk in chunks:
+                chunks_with_metadata.append({
+                    "text": chunk,
+                    "document": file.filename,
+                    "chunk_id": len(chunks_with_metadata)
+                })
+
             # Generate embeddings and store in vector store
             embeddings = await azure_openai_service.get_embeddings(chunks)
             vector_store.add_documents(chunks, embeddings)
@@ -84,22 +102,31 @@ async def upload_document(file: UploadFile = File(...)):
             # Add documents to BM25 retriever
             bm25_retriever.add_documents(chunks)
             
+
             # Add documents to contextual retriever
             contextual_retriever.add_documents(chunks, embeddings)
-            # Update global state
-            current_document = {
+
+            # Update documents collection
+            new_document = {
                 "filename": file.filename,
                 "content": text_content,
                 "chunks": chunks,
-                "chunk_count": len(chunks)
+                 "chunks_with_metadata": chunks_with_metadata,
+                "chunk_count": len(chunks),
+                "upload_time": str(os.path.getmtime(tmp_file_path))
             }
+            # Update global state
+            documents_collection.append(new_document)
+            # Update global counters
+            total_chunks += len(chunks)
             document_status = "ready"
             
             return {
                 "message": "Document uploaded and processed successfully",
                 "filename": file.filename,
                 "chunks": len(chunks),
-                "status": "ready"
+                "status": "ready",
+                "total_documents": len(documents_collection)
             }
             
         finally:
@@ -120,18 +147,55 @@ async def upload_document(file: UploadFile = File(...)):
 @app.get("/status", response_model=StatusResponse)
 async def get_status():
     """Get current document processing status"""
-    return StatusResponse(
-        status=document_status,
-        message=f"Document status: {document_status}",
-        document_info=current_document
-    )
+    global documents_collection, document_status, total_chunks
+    
+    if document_status == "none":
+        return StatusResponse(
+            status="none",
+            message="No documents uploaded yet",
+            documents=[],
+            total_documents=0,
+            total_chunks=0
+        )
+    elif document_status == "processing":
+        return StatusResponse(
+            status="processing",
+            message="Document is being processed...",
+            documents=[{"filename": doc["filename"], "chunks": doc["chunk_count"]} for doc in documents_collection],
+            total_documents=len(documents_collection),
+            total_chunks=total_chunks
+        )
+    elif document_status == "ready":
+        return StatusResponse(
+            status="ready",
+            message=f"Ready to query {len(documents_collection)} document(s)",
+            documents=[{"filename": doc["filename"], "chunks": doc["chunk_count"]} for doc in documents_collection],
+            total_documents=len(documents_collection),
+            total_chunks=total_chunks
+        )
+    elif document_status == "error":
+        return StatusResponse(
+            status="error",
+            message="Error processing document",
+            documents=[{"filename": doc["filename"], "chunks": doc["chunk_count"]} for doc in documents_collection],
+            total_documents=len(documents_collection),
+            total_chunks=total_chunks
+        )
+    else:
+        return StatusResponse(
+            status="unknown",
+            message="Unknown status",
+            documents=[],
+            total_documents=0,
+            total_chunks=0
+        )
 
 @app.post("/query", response_model=QueryResponse)
 async def query_document(request: QueryRequest):
-    """Query the uploaded document"""
-    global current_document, document_status
+    """Query the uploaded documents"""
+    global documents_collection, document_status
     
-    if document_status != "ready" or not current_document:
+    if document_status != "ready" or not documents_collection:
         raise HTTPException(
             status_code=400,
             detail="No document is ready for querying. Please upload a document first."
@@ -161,13 +225,18 @@ async def query_document(request: QueryRequest):
         response_text = await azure_openai_service.generate_response(
             query=request.query,
             context_chunks=similar_chunks,
-            document_filename=current_document["filename"]
+            document_filename=f"{len(documents_collection)} documents"
         )
+        
+        # Extract source documents from chunks
+        source_documents = list(set([doc["filename"] for doc in documents_collection]))
         
         return QueryResponse(
             response=response_text,
             query=request.query,
-            sources=similar_chunks[:3]  # Return top 3 sources
+            sources=similar_chunks[:3],  # Return top 3 sources
+            source_documents=source_documents,
+            documents_searched=len(documents_collection)  
         )
         
     except Exception as e:
@@ -178,13 +247,13 @@ async def query_document(request: QueryRequest):
 
 @app.post("/query_reranked", response_model=QueryResponse)
 async def query_document_by_semantic_reranking(request: QueryRequest):
-    """Query the uploaded document with semantic reranking for better results"""
-    global current_document, document_status
+    """Query the uploaded documents with semantic reranking for better results"""
+    global documents_collection, document_status
     
-    if document_status != "ready" or not current_document:
+    if document_status != "ready" or not documents_collection:
         raise HTTPException(
             status_code=400,
-            detail="No document is ready for querying. Please upload a document first."
+            detail="No documents are ready for querying. Please upload a document first."
         )
     
     try:
@@ -221,13 +290,18 @@ async def query_document_by_semantic_reranking(request: QueryRequest):
         response_text = await azure_openai_service.generate_response(
             query=request.query,
             context_chunks=top_reranked_chunks,
-            document_filename=current_document["filename"]
+            document_filename=f"{len(documents_collection)} documents"
         )
+        
+        # Extract source documents
+        source_documents = list(set([doc["filename"] for doc in documents_collection]))
         
         return QueryResponse(
             response=response_text,
             query=request.query,
-            sources=top_reranked_chunks[:3]  # Return top 3 reranked sources
+            sources=top_reranked_chunks[:3],  # Return top 3 reranked sources
+            source_documents=source_documents,
+            documents_searched=len(documents_collection)
         )
         
     except Exception as e:
@@ -238,10 +312,10 @@ async def query_document_by_semantic_reranking(request: QueryRequest):
 
 @app.post("/query_bm25", response_model=QueryResponse)
 async def query_document_bm25(request: QueryRequest):
-    """Query document using BM25 keyword search"""
-    global current_document, document_status
+    """Query documents using BM25 keyword search"""
+    global documents_collection, document_status
     
-    if document_status != "ready" or not current_document:
+    if document_status != "ready" or not documents_collection:
         raise HTTPException(
             status_code=400,
             detail="No document is ready for querying. Please upload a document first."
@@ -265,13 +339,18 @@ async def query_document_bm25(request: QueryRequest):
         response_text = await azure_openai_service.generate_response(
             query=request.query,
             context_chunks=top_chunks,
-            document_filename=current_document["filename"]
+            document_filename=f"{len(documents_collection)} documents"
         )
+        
+        # Extract source documents
+        source_documents = list(set([doc["filename"] for doc in documents_collection]))
         
         return QueryResponse(
             response=response_text,
             query=request.query,
-            sources=top_chunks[:3]  # Return top 3 BM25 sources
+            sources=top_chunks[:3],  # Return top 3 BM25 sources
+            source_documents=source_documents,
+            documents_searched=len(documents_collection)
         )
         
     except Exception as e:
@@ -281,13 +360,13 @@ async def query_document_bm25(request: QueryRequest):
         )
 @app.post("/query_contextual", response_model=QueryResponse)
 async def query_document_contextual(request: QueryRequest):
-    """Query document using contextual retrieval"""
-    global current_document, document_status
+    """Query documents using contextual retrieval"""
+    global documents_collection, document_status
     
-    if document_status != "ready" or not current_document:
+    if document_status != "ready" or not documents_collection:
         raise HTTPException(
             status_code=400,
-            detail="No document is ready for querying. Please upload a document first."
+            detail="No documents are ready for querying. Please upload documents first."
         )
     
     try:
@@ -321,13 +400,18 @@ async def query_document_contextual(request: QueryRequest):
         response_text = await azure_openai_service.generate_response(
             query=request.query,
             context_chunks=top_chunks,
-            document_filename=current_document["filename"]
+            document_filename=f"{len(documents_collection)} documents"
         )
+        
+        # Extract source documents
+        source_documents = list(set([doc["filename"] for doc in documents_collection]))
         
         return QueryResponse(
             response=response_text,
             query=request.query,
-            sources=top_chunks[:3]  # Return top 3 contextual sources
+            sources=top_chunks[:3],  # Return top 3 contextual sources
+            source_documents=source_documents,
+            documents_searched=len(documents_collection)
         )
         
     except Exception as e:
@@ -337,13 +421,13 @@ async def query_document_contextual(request: QueryRequest):
         )
 @app.post("/query_hybrid", response_model=QueryResponse)
 async def query_document_hybrid(request: QueryRequest):
-    """Query document using hybrid retrieval (combines multiple methods)"""
-    global current_document, document_status
+    """Query documents using hybrid retrieval (combines multiple methods)"""
+    global documents_collection, document_status
     
-    if document_status != "ready" or not current_document:
+    if document_status != "ready" or not documents_collection:
         raise HTTPException(
             status_code=400,
-            detail="No document is ready for querying. Please upload a document first."
+            detail="No documents are ready for querying. Please upload documents first."
         )
     
     try:
@@ -429,13 +513,18 @@ async def query_document_hybrid(request: QueryRequest):
         response_text = await azure_openai_service.generate_response(
             query=request.query,
             context_chunks=top_chunks,
-            document_filename=current_document["filename"]
+            document_filename=f"{len(documents_collection)} documents"
         )
+        
+        # Extract source documents
+        source_documents = list(set([doc["filename"] for doc in documents_collection]))
         
         return QueryResponse(
             response=response_text,
             query=request.query,
-            sources=top_chunks[:3]  # Return top 3 hybrid sources
+            sources=top_chunks[:3],  # Return top 3 hybrid sources
+            source_documents=source_documents,
+            documents_searched=len(documents_collection)
         )
         
     except Exception as e:
@@ -444,11 +533,86 @@ async def query_document_hybrid(request: QueryRequest):
             detail=f"Error processing hybrid query: {str(e)}"
         )
 
+@app.delete("/documents/{filename}")
+async def delete_document(filename: str):
+    """Delete a specific document from the collection"""
+    global documents_collection, document_status, total_chunks
+    
+    try:
+        # Find document to delete
+        doc_to_delete = next((doc for doc in documents_collection if doc["filename"] == filename), None)
+        if not doc_to_delete:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document '{filename}' not found"
+            )
+        
+        # Remove document from collection
+        documents_collection = [doc for doc in documents_collection if doc["filename"] != filename]
+        total_chunks -= doc_to_delete["chunk_count"]
+        
+        # Update status if no documents left
+        if not documents_collection:
+            document_status = "none"
+            total_chunks = 0
+            # Clear all retrievers
+            vector_store.clear()
+            bm25_retriever.clear()
+            contextual_retriever.clear()
+        else:
+            # Rebuild all retrievers with remaining documents
+            vector_store.clear()
+            bm25_retriever.clear()
+            contextual_retriever.clear()
+            
+            all_chunks = []
+            all_embeddings = []
+            
+            for doc in documents_collection:
+                all_chunks.extend(doc["chunks"])
+                # Note: We'd need to store embeddings to avoid regenerating them
+                # For now, we'll regenerate them (this is a limitation)
+            
+            if all_chunks:
+                # Regenerate embeddings for all remaining documents
+                embeddings = await azure_openai_service.get_embeddings(all_chunks)
+                vector_store.add_documents(all_chunks, embeddings)
+                bm25_retriever.add_documents(all_chunks)
+                contextual_retriever.add_documents(all_chunks, embeddings)
+        
+        return {
+            "message": f"Document '{filename}' deleted successfully",
+            "remaining_documents": len(documents_collection),
+            "total_chunks": total_chunks
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting document: {str(e)}"
+        )
+@app.get("/documents")
+async def list_documents():
+    """List all uploaded documents"""
+    global documents_collection
+    
+    return {
+        "documents": [
+            {
+                "filename": doc["filename"],
+                "chunks": doc["chunk_count"],
+                "upload_time": doc.get("upload_time", "unknown")
+            }
+            for doc in documents_collection
+        ],
+        "total_documents": len(documents_collection),
+        "total_chunks": sum(doc["chunk_count"] for doc in documents_collection)
+    }
 
 @app.post("/reset")
 async def reset_session():
     """Reset the current session"""
-    global current_document, document_status
+    global documents_collection, document_status, total_chunks
     
     try:
         # Clear vector store
@@ -456,8 +620,9 @@ async def reset_session():
         bm25_retriever.clear()
         contextual_retriever.clear()
         # Reset global state
-        current_document = None
+        documents_collection = []
         document_status = "none"
+        total_chunks = 0
         
         return {"message": "Session reset successfully"}
         

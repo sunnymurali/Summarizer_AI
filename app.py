@@ -164,19 +164,23 @@ def send_query_hybrid(query: str):
         return False, f"Error: {str(e)}"
 
 def display_sources(sources: List[str], title: str = "📚 Sources Used"):
-    """Display source citations in an expandable section"""
+    """Display source citations in an expandable section (no nested expanders)"""
     if sources:
         with st.expander(f"{title} ({len(sources)} sources)", expanded=False):
             for i, source in enumerate(sources, 1):
                 st.markdown(f"**Source {i}:**")
-                # Truncate long sources for better display
+                
+                # Truncate long sources for preview
                 if len(source) > 500:
                     preview = source[:500] + "..."
                     st.markdown(f"*{preview}*")
-                    with st.expander(f"View full source {i}"):
+                    
+                    # Use a checkbox instead of nested expander to show full text
+                    if st.checkbox(f"Show full source {i}", key=f"source_{i}"):
                         st.text(source)
                 else:
                     st.markdown(f"*{source}*")
+                
                 if i < len(sources):
                     st.markdown("---")
 
